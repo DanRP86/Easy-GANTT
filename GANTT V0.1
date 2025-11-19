@@ -1,489 +1,209 @@
-import React, { useState, useEffect, useRef, useMemo } from 'react';
-import { 
-  Plus, 
-  Trash2, 
-  ChevronRight, 
-  ChevronDown, 
-  Calendar, 
-  ZoomIn, 
-  ZoomOut,
-  MoreVertical,
-  GripVertical
-} from 'lucide-react';
+import tkinter as tk
+from tkinter import ttk
+import datetime
 
-// --- Útiles de Fecha ---
-const MS_PER_DAY = 1000 * 60 * 60 * 24;
+# --- Configuración y Utilidades ---
+TRANS_COLOR = "gray" # Color para interacciones
 
-const stripTime = (date) => {
-  const d = new Date(date);
-  d.setHours(0, 0, 0, 0);
-  return d;
-};
+def strip_time(date):
+    return date.replace(hour=0, minute=0, second=0, microsecond=0)
 
-const addDays = (date, days) => {
-  const result = new Date(date);
-  result.setDate(result.getDate() + days);
-  return result;
-};
+def add_days(date, days):
+    return date + datetime.timedelta(days=days)
 
-const getDiffDays = (start, end) => {
-  const diffTime = Math.abs(end - start);
-  return Math.ceil(diffTime / MS_PER_DAY);
-};
+def date_diff(start, end):
+    return (end - start).days
 
-const formatDateES = (date) => {
-  return new Intl.DateTimeFormat('es-ES', { month: 'short', day: 'numeric' }).format(date);
-};
+# --- Datos Iniciales (Similar a la App React) ---
+INITIAL_TASKS = [
+    {"id": 1, "name": "Planificación", "start": strip_time(datetime.datetime.now()), "duration": 10, "color": "#3b82f6", "level": 0},
+    {"id": 2, "name": "Diseño UI", "start": add_days(datetime.datetime.now(), 2), "duration": 5, "color": "#10b981", "level": 1},
+    {"id": 3, "name": "Desarrollo", "start": add_days(datetime.datetime.now(), 8), "duration": 15, "color": "#6366f1", "level": 0},
+    {"id": 4, "name": "Backend", "start": add_days(datetime.datetime.now(), 8), "duration": 7, "color": "#a855f7", "level": 1},
+    {"id": 5, "name": "Frontend", "start": add_days(datetime.datetime.now(), 12), "duration": 10, "color": "#ec4899", "level": 1},
+]
 
-// --- Datos Iniciales ---
-const INITIAL_TASKS = [
-  {
-    id: '1',
-    name: 'Planificación del Proyecto',
-    start: stripTime(new Date()),
-    duration: 5,
-    type: 'task',
-    expanded: true,
-    color: 'bg-blue-500',
-    progress: 60,
-    children: [
-      {
-        id: '1-1',
-        name: 'Definir Requisitos',
-        start: stripTime(new Date()),
-        duration: 2,
-        type: 'subtask',
-        color: 'bg-emerald-500',
-        progress: 100,
-      },
-      {
-        id: '1-2',
-        name: 'Asignar Recursos',
-        start: addDays(new Date(), 2),
-        duration: 3,
-        type: 'subtask',
-        color: 'bg-emerald-500',
-        progress: 30,
-      }
-    ]
-  },
-  {
-    id: '2',
-    name: 'Desarrollo',
-    start: addDays(new Date(), 5),
-    duration: 10,
-    type: 'task',
-    expanded: true,
-    color: 'bg-indigo-600',
-    progress: 0,
-    children: []
-  }
-];
+class GanttApp(tk.Tk):
+    def __init__(self):
+        super().__init__()
+        self.title("Python Gantt Reasoning Demo")
+        self.geometry("1000x600")
 
-// --- Componente Principal ---
-
-export default function GanttApp() {
-  // Estado
-  const [tasks, setTasks] = useState(INITIAL_TASKS);
-  const [viewMode, setViewMode] = useState('day'); // day, week
-  const [columnWidth, setColumnWidth] = useState(50); // Píxeles por día
-  const [dragging, setDragging] = useState(null); // { id, type: 'move' | 'resize-l' | 'resize-r', startX, originalStart, originalDuration }
-  const scrollContainerRef = useRef(null);
-
-  // Aplanar tareas para renderizado (Manejo de jerarquía)
-  const flattenTasks = useMemo(() => {
-    const flat = [];
-    const process = (list, level = 0) => {
-      list.forEach(t => {
-        flat.push({ ...t, level });
-        if (t.expanded && t.children) {
-          process(t.children, level + 1);
-        }
-      });
-    };
-    process(tasks);
-    return flat;
-  }, [tasks]);
-
-  // Calcular rango total de fechas
-  const { minDate, totalDays } = useMemo(() => {
-    let min = new Date(); // Default hoy
-    let max = addDays(new Date(), 30);
-
-    const checkDate = (t) => {
-      if (t.start < min) min = new Date(t.start);
-      const end = addDays(t.start, t.duration);
-      if (end > max) max = end;
-      if (t.children) t.children.forEach(checkDate);
-    };
-    tasks.forEach(checkDate);
-
-    // Añadir buffer visual
-    min = addDays(min, -2);
-    max = addDays(max, 5);
-    
-    const days = getDiffDays(min, max);
-    return { minDate: min, totalDays: days };
-  }, [tasks]);
-
-  // --- Lógica de Actualización de Tareas ---
-
-  const updateTask = (id, updates) => {
-    const updateRecursive = (list) => {
-      return list.map(t => {
-        if (t.id === id) return { ...t, ...updates };
-        if (t.children) return { ...t, children: updateRecursive(t.children) };
-        return t;
-      });
-    };
-    setTasks(updateRecursive(tasks));
-  };
-
-  const toggleExpand = (id) => {
-    const updateRecursive = (list) => {
-      return list.map(t => {
-        if (t.id === id) return { ...t, expanded: !t.expanded };
-        if (t.children) return { ...t, children: updateRecursive(t.children) };
-        return t;
-      });
-    };
-    setTasks(updateRecursive(tasks));
-  };
-
-  const addTask = (parentId = null) => {
-    const newTask = {
-      id: Date.now().toString(),
-      name: parentId ? 'Nueva Subtarea' : 'Nueva Tarea',
-      start: stripTime(new Date()),
-      duration: 3,
-      type: parentId ? 'subtask' : 'task',
-      expanded: true,
-      color: parentId ? 'bg-emerald-500' : 'bg-blue-600',
-      progress: 0,
-      children: []
-    };
-
-    if (!parentId) {
-      setTasks([...tasks, newTask]);
-    } else {
-      const updateRecursive = (list) => {
-        return list.map(t => {
-          if (t.id === parentId) return { ...t, expanded: true, children: [...(t.children || []), newTask] };
-          if (t.children) return { ...t, children: updateRecursive(t.children) };
-          return t;
-        });
-      };
-      setTasks(updateRecursive(tasks));
-    }
-  };
-
-  const deleteTask = (id) => {
-    const deleteRecursive = (list) => {
-      return list.filter(t => t.id !== id).map(t => ({
-        ...t,
-        children: t.children ? deleteRecursive(t.children) : []
-      }));
-    };
-    setTasks(deleteRecursive(tasks));
-  };
-
-  // --- Lógica de Drag & Drop (Mouse) ---
-
-  const handleMouseDown = (e, task, action) => {
-    e.stopPropagation();
-    setDragging({
-      id: task.id,
-      action, // 'move', 'resize-left', 'resize-right'
-      startX: e.clientX,
-      originalStart: task.start,
-      originalDuration: task.duration
-    });
-  };
-
-  useEffect(() => {
-    const handleMouseMove = (e) => {
-      if (!dragging) return;
-
-      const deltaX = e.clientX - dragging.startX;
-      const deltaDays = Math.round(deltaX / columnWidth);
-
-      if (dragging.action === 'move') {
-        const newStart = addDays(dragging.originalStart, deltaDays);
-        updateTask(dragging.id, { start: newStart });
-      } 
-      else if (dragging.action === 'resize-right') {
-        const newDuration = Math.max(1, dragging.originalDuration + deltaDays);
-        updateTask(dragging.id, { duration: newDuration });
-      }
-      else if (dragging.action === 'resize-left') {
-        const newStart = addDays(dragging.originalStart, deltaDays);
-        const newDuration = Math.max(1, dragging.originalDuration - deltaDays);
-        // Evitar duración negativa o cero invirtiendo el comportamiento si es necesario
-        if (newDuration >= 1) {
-          updateTask(dragging.id, { start: newStart, duration: newDuration });
-        }
-      }
-    };
-
-    const handleMouseUp = () => {
-      setDragging(null);
-    };
-
-    if (dragging) {
-      window.addEventListener('mousemove', handleMouseMove);
-      window.addEventListener('mouseup', handleMouseUp);
-    }
-    return () => {
-      window.removeEventListener('mousemove', handleMouseMove);
-      window.removeEventListener('mouseup', handleMouseUp);
-    };
-  }, [dragging, columnWidth, tasks]); // tasks dependency needed for updateTask reference in simple implementation
-
-  // --- Renderizado del Grid ---
-
-  const calendarHeaders = useMemo(() => {
-    const headers = [];
-    for (let i = 0; i < totalDays; i++) {
-      const date = addDays(minDate, i);
-      headers.push(
-        <div 
-          key={i} 
-          className={`flex-shrink-0 border-r border-slate-200 text-xs text-slate-500 flex flex-col justify-center items-center ${
-            date.getDay() === 0 || date.getDay() === 6 ? 'bg-slate-50' : 'bg-white'
-          }`}
-          style={{ width: columnWidth, height: 40 }}
-        >
-          <span className="font-bold">{date.getDate()}</span>
-          <span className="text-[10px] uppercase">{new Intl.DateTimeFormat('es-ES', { weekday: 'narrow' }).format(date)}</span>
-        </div>
-      );
-    }
-    return headers;
-  }, [totalDays, minDate, columnWidth]);
-
-  return (
-    <div className="flex flex-col h-screen bg-slate-100 font-sans text-slate-800 overflow-hidden">
-      
-      {/* --- Header Superior --- */}
-      <header className="bg-white border-b border-slate-200 p-4 flex items-center justify-between shadow-sm z-20">
-        <div className="flex items-center gap-3">
-          <div className="p-2 bg-indigo-600 rounded-lg text-white shadow-indigo-200 shadow-lg">
-            <Calendar size={20} />
-          </div>
-          <h1 className="text-xl font-bold text-slate-800">GanttMaster <span className="font-normal text-slate-400 text-sm ml-2">| Planificador Inteligente</span></h1>
-        </div>
-
-        <div className="flex items-center gap-4 bg-slate-50 p-1.5 rounded-lg border border-slate-200">
-            <button 
-              onClick={() => setColumnWidth(prev => Math.max(20, prev - 10))}
-              className="p-2 hover:bg-white hover:shadow-sm rounded-md transition-all text-slate-600"
-              title="Alejar"
-            >
-              <ZoomOut size={18} />
-            </button>
-            <div className="w-24 px-2">
-              <input 
-                type="range" 
-                min="20" 
-                max="100" 
-                value={columnWidth} 
-                onChange={(e) => setColumnWidth(Number(e.target.value))}
-                className="w-full h-1.5 bg-slate-300 rounded-lg appearance-none cursor-pointer accent-indigo-600"
-              />
-            </div>
-            <button 
-              onClick={() => setColumnWidth(prev => Math.min(150, prev + 10))}
-              className="p-2 hover:bg-white hover:shadow-sm rounded-md transition-all text-slate-600"
-              title="Acercar"
-            >
-              <ZoomIn size={18} />
-            </button>
-        </div>
-
-        <button 
-          onClick={() => addTask()}
-          className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-lg shadow-md transition-all font-medium text-sm"
-        >
-          <Plus size={16} />
-          Proyecto Nuevo
-        </button>
-      </header>
-
-      {/* --- Área Principal --- */}
-      <div className="flex flex-1 overflow-hidden">
+        # --- Estado ---
+        self.tasks = INITIAL_TASKS
+        self.col_width = 40  # Zoom inicial (px por día)
+        self.row_height = 40
+        self.header_height = 50
+        self.sidebar_width = 250
+        self.start_date = strip_time(datetime.datetime.now()) - datetime.timedelta(days=2)
         
-        {/* --- Panel Lateral (Lista de Tareas) --- */}
-        <div className="w-80 bg-white border-r border-slate-200 flex flex-col shadow-[4px_0_24px_rgba(0,0,0,0.02)] z-10">
-          <div className="h-10 border-b border-slate-200 bg-slate-50 flex items-center px-4 font-semibold text-xs text-slate-500 uppercase tracking-wider">
-            Tareas
-          </div>
-          <div className="flex-1 overflow-y-auto overflow-x-hidden custom-scrollbar">
-            {flattenTasks.map((task) => (
-              <div 
-                key={task.id} 
-                className="group flex items-center h-12 border-b border-slate-100 hover:bg-slate-50 transition-colors px-2"
-                style={{ paddingLeft: `${task.level * 20 + 8}px` }}
-              >
-                {/* Toggle Expand */}
-                <button 
-                  onClick={() => task.children && toggleExpand(task.id)}
-                  className={`p-1 rounded hover:bg-slate-200 text-slate-400 mr-1 ${!task.children || task.children.length === 0 ? 'invisible' : ''}`}
-                >
-                  {task.expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-                </button>
+        # Variables para Drag & Drop
+        self.dragging_item = None
+        self.drag_data = {"x": 0, "start_date": None, "task_idx": None}
+        
+        self._setup_ui()
+        self.draw_gantt()
 
-                {/* Nombre Tarea */}
-                <input 
-                  type="text" 
-                  value={task.name}
-                  onChange={(e) => updateTask(task.id, { name: e.target.value })}
-                  className="flex-1 bg-transparent text-sm font-medium text-slate-700 focus:outline-none focus:text-indigo-600 truncate"
-                />
+    def _setup_ui(self):
+        # 1. Barra Superior (Controles)
+        toolbar = tk.Frame(self, bd=1, relief=tk.RAISED)
+        toolbar.pack(side=tk.TOP, fill=tk.X)
 
-                {/* Acciones */}
-                <div className="opacity-0 group-hover:opacity-100 flex items-center gap-1 transition-opacity">
-                  {task.type === 'task' && (
-                    <button 
-                      onClick={() => addTask(task.id)}
-                      className="p-1.5 text-emerald-600 hover:bg-emerald-50 rounded"
-                      title="Añadir Subtarea"
-                    >
-                      <Plus size={14} />
-                    </button>
-                  )}
-                  <button 
-                    onClick={() => deleteTask(task.id)}
-                    className="p-1.5 text-red-500 hover:bg-red-50 rounded"
-                    title="Eliminar"
-                  >
-                    <Trash2 size={14} />
-                  </button>
-                </div>
-              </div>
-            ))}
-          </div>
-          <div className="p-3 border-t border-slate-200 bg-slate-50 text-xs text-slate-500 text-center">
-            {flattenTasks.length} elementos totales
-          </div>
-        </div>
+        tk.Label(toolbar, text="Zoom:").pack(side=tk.LEFT, padx=5)
+        self.scale_var = tk.DoubleVar(value=40)
+        scale = tk.Scale(toolbar, from_=20, to=100, orient=tk.HORIZONTAL, variable=self.scale_var, command=self.on_zoom_change)
+        scale.pack(side=tk.LEFT, padx=5)
 
-        {/* --- Área del Gráfico (Gantt) --- */}
-        <div className="flex-1 flex flex-col overflow-hidden relative bg-white">
-          
-          {/* Cabecera de Fechas */}
-          <div 
-            ref={scrollContainerRef}
-            className="flex-1 overflow-auto custom-scrollbar relative"
-          >
-            <div className="sticky top-0 z-10 flex bg-white shadow-sm min-w-max border-b border-slate-200">
-              {calendarHeaders}
-            </div>
+        tk.Button(toolbar, text="Añadir Tarea", command=self.add_task).pack(side=tk.RIGHT, padx=10, pady=5)
 
-            {/* Grid & Barras */}
-            <div className="relative min-w-max" style={{ width: totalDays * columnWidth }}>
-              
-              {/* Líneas de fondo del grid */}
-              <div className="absolute inset-0 flex pointer-events-none">
-                {Array.from({ length: totalDays }).map((_, i) => (
-                  <div 
-                    key={i} 
-                    className={`border-r border-slate-100 h-full ${i % 7 === 0 ? 'border-slate-200' : ''}`}
-                    style={{ width: columnWidth }}
-                  />
-                ))}
-              </div>
+        # 2. Panel Principal
+        main_pane = tk.PanedWindow(self, orient=tk.HORIZONTAL)
+        main_pane.pack(fill=tk.BOTH, expand=True)
 
-              {/* Filas de tareas */}
-              <div className="pt-0">
-                {flattenTasks.map((task) => {
-                  const startOffset = getDiffDays(minDate, task.start) * columnWidth;
-                  const width = task.duration * columnWidth;
-                  
-                  return (
-                    <div 
-                      key={task.id} 
-                      className="h-12 relative flex items-center border-b border-slate-50 hover:bg-slate-50/50 transition-colors"
-                    >
-                      {/* Barra Gantt */}
-                      <div
-                        className={`absolute h-7 rounded-md shadow-sm group select-none flex items-center cursor-move ${task.color} ${dragging?.id === task.id ? 'opacity-80 ring-2 ring-indigo-300 ring-offset-1' : ''}`}
-                        style={{
-                          left: startOffset,
-                          width: width,
-                          minWidth: columnWidth // Mínimo 1 día
-                        }}
-                        onMouseDown={(e) => handleMouseDown(e, task, 'move')}
-                      >
-                        {/* Resize Handle Left */}
-                        <div 
-                          className="w-2 h-full absolute left-0 top-0 cursor-ew-resize opacity-0 group-hover:opacity-100 hover:bg-white/20 rounded-l-md transition-opacity"
-                          onMouseDown={(e) => handleMouseDown(e, task, 'resize-left')}
-                        />
+        # 3. Lista de Tareas (Izquierda)
+        self.tree = ttk.Treeview(main_pane, columns=("Start", "Dur"), show="tree headings")
+        self.tree.heading("#0", text="Tarea")
+        self.tree.heading("Start", text="Inicio")
+        self.tree.heading("Dur", text="Días")
+        self.tree.column("#0", width=150)
+        self.tree.column("Start", width=0, stretch=tk.NO) # Oculto por simplicidad
+        self.tree.column("Dur", width=50)
+        
+        main_pane.add(self.tree, width=self.sidebar_width)
 
-                        {/* Label dentro de la barra */}
-                        <span className="px-3 text-[11px] font-medium text-white truncate w-full pointer-events-none drop-shadow-md">
-                          {task.name}
-                        </span>
+        # 4. Canvas del Gantt (Derecha)
+        self.canvas_frame = tk.Frame(main_pane)
+        self.canvas = tk.Canvas(self.canvas_frame, bg="white")
+        
+        # Scrollbars para el canvas
+        h_scroll = tk.Scrollbar(self.canvas_frame, orient=tk.HORIZONTAL, command=self.canvas.xview)
+        v_scroll = tk.Scrollbar(self.canvas_frame, orient=tk.VERTICAL, command=self.canvas.yview)
+        self.canvas.configure(xscrollcommand=h_scroll.set, yscrollcommand=v_scroll.set)
+        
+        h_scroll.pack(side=tk.BOTTOM, fill=tk.X)
+        v_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+        self.canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        
+        main_pane.add(self.canvas_frame)
 
-                        {/* Porcentaje (visual) */}
-                        <div 
-                          className="absolute bottom-0 left-0 h-1 bg-black/20" 
-                          style={{ width: `${task.progress}%` }} 
-                        />
+        # 5. Eventos
+        self.canvas.bind("<Button-1>", self.on_mouse_down)
+        self.canvas.bind("<B1-Motion>", self.on_mouse_drag)
+        self.canvas.bind("<ButtonRelease-1>", self.on_mouse_up)
 
-                        {/* Resize Handle Right */}
-                        <div 
-                          className="w-2 h-full absolute right-0 top-0 cursor-ew-resize opacity-0 group-hover:opacity-100 hover:bg-white/20 rounded-r-md transition-opacity"
-                          onMouseDown={(e) => handleMouseDown(e, task, 'resize-right')}
-                        />
-                      </div>
+    def on_zoom_change(self, val):
+        self.col_width = int(float(val))
+        self.draw_gantt()
 
-                      {/* Etiqueta flotante si es muy pequeña */}
-                      {width < 60 && (
-                         <div 
-                           className="absolute text-xs text-slate-400 ml-2 whitespace-nowrap pointer-events-none"
-                           style={{ left: startOffset + width }}
-                         >
-                           {task.duration}d
-                         </div>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
-
-              {/* Indicador de "Hoy" */}
-              <div 
-                className="absolute top-0 bottom-0 w-px bg-red-500 z-0 pointer-events-none"
-                style={{ left: getDiffDays(minDate, new Date()) * columnWidth }}
-              >
-                <div className="bg-red-500 text-white text-[9px] font-bold px-1 py-0.5 rounded absolute -top-0 -translate-x-1/2">
-                  HOY
-                </div>
-              </div>
-
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <style>{`
-        .custom-scrollbar::-webkit-scrollbar {
-          width: 10px;
-          height: 10px;
+    def add_task(self):
+        new_id = len(self.tasks) + 1
+        new_task = {
+            "id": new_id, 
+            "name": f"Nueva Tarea {new_id}", 
+            "start": strip_time(datetime.datetime.now()), 
+            "duration": 5, 
+            "color": "#3b82f6",
+            "level": 0
         }
-        .custom-scrollbar::-webkit-scrollbar-track {
-          background: #f1f5f9;
-        }
-        .custom-scrollbar::-webkit-scrollbar-thumb {
-          background: #cbd5e1;
-          border-radius: 5px;
-          border: 2px solid #f1f5f9;
-        }
-        .custom-scrollbar::-webkit-scrollbar-thumb:hover {
-          background: #94a3b8;
-        }
-      `}</style>
-    </div>
-  );
-}
+        self.tasks.append(new_task)
+        self.draw_gantt()
+
+    def draw_gantt(self):
+        self.canvas.delete("all")
+        self.tree.delete(*self.tree.get_children())
+
+        total_days = 60 # Rango visual fijo para demo
+        
+        # --- 1. Dibujar Grid y Cabeceras ---
+        for i in range(total_days):
+            x = i * self.col_width
+            date = add_days(self.start_date, i)
+            
+            # Fondo alterno para fines de semana
+            if date.weekday() >= 5:
+                self.canvas.create_rectangle(x, 0, x + self.col_width, 1000, fill="#f3f4f6", outline="")
+            
+            # Líneas verticales
+            self.canvas.create_line(x, 0, x, 1000, fill="#e5e7eb")
+            
+            # Texto Cabecera
+            day_str = date.strftime("%d")
+            month_str = date.strftime("%b")
+            self.canvas.create_text(x + self.col_width/2, 15, text=day_str, font=("Arial", 9, "bold"))
+            self.canvas.create_text(x + self.col_width/2, 30, text=month_str, font=("Arial", 7), fill="gray")
+
+        self.canvas.create_line(0, self.header_height, total_days * self.col_width, self.header_height, fill="#d1d5db")
+
+        # --- 2. Dibujar Tareas ---
+        for idx, task in enumerate(self.tasks):
+            # Actualizar panel izquierdo
+            tree_id = self.tree.insert("", "end", text=task["name"], values=(task["start"].strftime("%Y-%m-%d"), f"{task['duration']}d"))
+            
+            # Calcular posición en Canvas
+            days_from_start = date_diff(self.start_date, task["start"])
+            x1 = days_from_start * self.col_width
+            x2 = x1 + (task["duration"] * self.col_width)
+            y1 = self.header_height + (idx * self.row_height) + 5
+            y2 = y1 + 30
+
+            # Dibujar Barra (rectángulo redondeado simulado)
+            color = task["color"]
+            # Guardamos el ID de la tarea en los tags del objeto canvas para identificarlo luego
+            rect_tag = f"task_{idx}"
+            
+            self.canvas.create_rectangle(x1, y1, x2, y2, fill=color, outline="white", width=2, tags=(rect_tag, "bar"))
+            self.canvas.create_text(x1 + 5, y1 + 15, text=task["name"], anchor="w", fill="white", font=("Arial", 9), tags=(rect_tag, "text"))
+
+        # Configurar scroll region
+        self.canvas.configure(scrollregion=(0, 0, total_days * self.col_width, self.header_height + len(self.tasks) * self.row_height + 50))
+
+    # --- Lógica de Interacción (Razonamiento idéntico a React) ---
+    
+    def on_mouse_down(self, event):
+        # Traducir coordenadas del evento a coordenadas del canvas (por si hay scroll)
+        canvas_x = self.canvas.canvasx(event.x)
+        canvas_y = self.canvas.canvasy(event.y)
+        
+        # Encontrar objetos bajo el mouse
+        item = self.canvas.find_closest(canvas_x, canvas_y)
+        tags = self.canvas.gettags(item)
+        
+        # Verificar si es una barra de tarea
+        task_tag = next((t for t in tags if t.startswith("task_")), None)
+        
+        if task_tag:
+            task_idx = int(task_tag.split("_")[1])
+            self.dragging_item = task_idx
+            self.drag_data["x"] = canvas_x
+            self.drag_data["start_date"] = self.tasks[task_idx]["start"]
+            self.drag_data["task_idx"] = task_idx
+            
+            # Feedback visual (borde negro al seleccionar)
+            self.canvas.itemconfig(item, outline="black")
+
+    def on_mouse_drag(self, event):
+        if self.dragging_item is not None:
+            canvas_x = self.canvas.canvasx(event.x)
+            
+            # Calcular delta en píxeles y convertir a días (Lógica clave)
+            delta_x = canvas_x - self.drag_data["x"]
+            days_shift = int(delta_x / self.col_width)
+            
+            if days_shift != 0:
+                original_start = self.drag_data["start_date"]
+                new_start = add_days(original_start, days_shift)
+                
+                # Actualizar datos en tiempo real
+                self.tasks[self.dragging_item]["start"] = new_start
+                
+                # Redibujar para feedback instantáneo
+                self.draw_gantt()
+
+    def on_mouse_up(self, event):
+        if self.dragging_item is not None:
+            self.dragging_item = None
+            self.draw_gantt() # Redibujar final para limpiar estados
+
+if __name__ == "__main__":
+    app = GanttApp()
+    app.mainloop()
