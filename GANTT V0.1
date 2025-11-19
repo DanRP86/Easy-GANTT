@@ -1,0 +1,489 @@
+import React, { useState, useEffect, useRef, useMemo } from 'react';
+import { 
+  Plus, 
+  Trash2, 
+  ChevronRight, 
+  ChevronDown, 
+  Calendar, 
+  ZoomIn, 
+  ZoomOut,
+  MoreVertical,
+  GripVertical
+} from 'lucide-react';
+
+// --- Útiles de Fecha ---
+const MS_PER_DAY = 1000 * 60 * 60 * 24;
+
+const stripTime = (date) => {
+  const d = new Date(date);
+  d.setHours(0, 0, 0, 0);
+  return d;
+};
+
+const addDays = (date, days) => {
+  const result = new Date(date);
+  result.setDate(result.getDate() + days);
+  return result;
+};
+
+const getDiffDays = (start, end) => {
+  const diffTime = Math.abs(end - start);
+  return Math.ceil(diffTime / MS_PER_DAY);
+};
+
+const formatDateES = (date) => {
+  return new Intl.DateTimeFormat('es-ES', { month: 'short', day: 'numeric' }).format(date);
+};
+
+// --- Datos Iniciales ---
+const INITIAL_TASKS = [
+  {
+    id: '1',
+    name: 'Planificación del Proyecto',
+    start: stripTime(new Date()),
+    duration: 5,
+    type: 'task',
+    expanded: true,
+    color: 'bg-blue-500',
+    progress: 60,
+    children: [
+      {
+        id: '1-1',
+        name: 'Definir Requisitos',
+        start: stripTime(new Date()),
+        duration: 2,
+        type: 'subtask',
+        color: 'bg-emerald-500',
+        progress: 100,
+      },
+      {
+        id: '1-2',
+        name: 'Asignar Recursos',
+        start: addDays(new Date(), 2),
+        duration: 3,
+        type: 'subtask',
+        color: 'bg-emerald-500',
+        progress: 30,
+      }
+    ]
+  },
+  {
+    id: '2',
+    name: 'Desarrollo',
+    start: addDays(new Date(), 5),
+    duration: 10,
+    type: 'task',
+    expanded: true,
+    color: 'bg-indigo-600',
+    progress: 0,
+    children: []
+  }
+];
+
+// --- Componente Principal ---
+
+export default function GanttApp() {
+  // Estado
+  const [tasks, setTasks] = useState(INITIAL_TASKS);
+  const [viewMode, setViewMode] = useState('day'); // day, week
+  const [columnWidth, setColumnWidth] = useState(50); // Píxeles por día
+  const [dragging, setDragging] = useState(null); // { id, type: 'move' | 'resize-l' | 'resize-r', startX, originalStart, originalDuration }
+  const scrollContainerRef = useRef(null);
+
+  // Aplanar tareas para renderizado (Manejo de jerarquía)
+  const flattenTasks = useMemo(() => {
+    const flat = [];
+    const process = (list, level = 0) => {
+      list.forEach(t => {
+        flat.push({ ...t, level });
+        if (t.expanded && t.children) {
+          process(t.children, level + 1);
+        }
+      });
+    };
+    process(tasks);
+    return flat;
+  }, [tasks]);
+
+  // Calcular rango total de fechas
+  const { minDate, totalDays } = useMemo(() => {
+    let min = new Date(); // Default hoy
+    let max = addDays(new Date(), 30);
+
+    const checkDate = (t) => {
+      if (t.start < min) min = new Date(t.start);
+      const end = addDays(t.start, t.duration);
+      if (end > max) max = end;
+      if (t.children) t.children.forEach(checkDate);
+    };
+    tasks.forEach(checkDate);
+
+    // Añadir buffer visual
+    min = addDays(min, -2);
+    max = addDays(max, 5);
+    
+    const days = getDiffDays(min, max);
+    return { minDate: min, totalDays: days };
+  }, [tasks]);
+
+  // --- Lógica de Actualización de Tareas ---
+
+  const updateTask = (id, updates) => {
+    const updateRecursive = (list) => {
+      return list.map(t => {
+        if (t.id === id) return { ...t, ...updates };
+        if (t.children) return { ...t, children: updateRecursive(t.children) };
+        return t;
+      });
+    };
+    setTasks(updateRecursive(tasks));
+  };
+
+  const toggleExpand = (id) => {
+    const updateRecursive = (list) => {
+      return list.map(t => {
+        if (t.id === id) return { ...t, expanded: !t.expanded };
+        if (t.children) return { ...t, children: updateRecursive(t.children) };
+        return t;
+      });
+    };
+    setTasks(updateRecursive(tasks));
+  };
+
+  const addTask = (parentId = null) => {
+    const newTask = {
+      id: Date.now().toString(),
+      name: parentId ? 'Nueva Subtarea' : 'Nueva Tarea',
+      start: stripTime(new Date()),
+      duration: 3,
+      type: parentId ? 'subtask' : 'task',
+      expanded: true,
+      color: parentId ? 'bg-emerald-500' : 'bg-blue-600',
+      progress: 0,
+      children: []
+    };
+
+    if (!parentId) {
+      setTasks([...tasks, newTask]);
+    } else {
+      const updateRecursive = (list) => {
+        return list.map(t => {
+          if (t.id === parentId) return { ...t, expanded: true, children: [...(t.children || []), newTask] };
+          if (t.children) return { ...t, children: updateRecursive(t.children) };
+          return t;
+        });
+      };
+      setTasks(updateRecursive(tasks));
+    }
+  };
+
+  const deleteTask = (id) => {
+    const deleteRecursive = (list) => {
+      return list.filter(t => t.id !== id).map(t => ({
+        ...t,
+        children: t.children ? deleteRecursive(t.children) : []
+      }));
+    };
+    setTasks(deleteRecursive(tasks));
+  };
+
+  // --- Lógica de Drag & Drop (Mouse) ---
+
+  const handleMouseDown = (e, task, action) => {
+    e.stopPropagation();
+    setDragging({
+      id: task.id,
+      action, // 'move', 'resize-left', 'resize-right'
+      startX: e.clientX,
+      originalStart: task.start,
+      originalDuration: task.duration
+    });
+  };
+
+  useEffect(() => {
+    const handleMouseMove = (e) => {
+      if (!dragging) return;
+
+      const deltaX = e.clientX - dragging.startX;
+      const deltaDays = Math.round(deltaX / columnWidth);
+
+      if (dragging.action === 'move') {
+        const newStart = addDays(dragging.originalStart, deltaDays);
+        updateTask(dragging.id, { start: newStart });
+      } 
+      else if (dragging.action === 'resize-right') {
+        const newDuration = Math.max(1, dragging.originalDuration + deltaDays);
+        updateTask(dragging.id, { duration: newDuration });
+      }
+      else if (dragging.action === 'resize-left') {
+        const newStart = addDays(dragging.originalStart, deltaDays);
+        const newDuration = Math.max(1, dragging.originalDuration - deltaDays);
+        // Evitar duración negativa o cero invirtiendo el comportamiento si es necesario
+        if (newDuration >= 1) {
+          updateTask(dragging.id, { start: newStart, duration: newDuration });
+        }
+      }
+    };
+
+    const handleMouseUp = () => {
+      setDragging(null);
+    };
+
+    if (dragging) {
+      window.addEventListener('mousemove', handleMouseMove);
+      window.addEventListener('mouseup', handleMouseUp);
+    }
+    return () => {
+      window.removeEventListener('mousemove', handleMouseMove);
+      window.removeEventListener('mouseup', handleMouseUp);
+    };
+  }, [dragging, columnWidth, tasks]); // tasks dependency needed for updateTask reference in simple implementation
+
+  // --- Renderizado del Grid ---
+
+  const calendarHeaders = useMemo(() => {
+    const headers = [];
+    for (let i = 0; i < totalDays; i++) {
+      const date = addDays(minDate, i);
+      headers.push(
+        <div 
+          key={i} 
+          className={`flex-shrink-0 border-r border-slate-200 text-xs text-slate-500 flex flex-col justify-center items-center ${
+            date.getDay() === 0 || date.getDay() === 6 ? 'bg-slate-50' : 'bg-white'
+          }`}
+          style={{ width: columnWidth, height: 40 }}
+        >
+          <span className="font-bold">{date.getDate()}</span>
+          <span className="text-[10px] uppercase">{new Intl.DateTimeFormat('es-ES', { weekday: 'narrow' }).format(date)}</span>
+        </div>
+      );
+    }
+    return headers;
+  }, [totalDays, minDate, columnWidth]);
+
+  return (
+    <div className="flex flex-col h-screen bg-slate-100 font-sans text-slate-800 overflow-hidden">
+      
+      {/* --- Header Superior --- */}
+      <header className="bg-white border-b border-slate-200 p-4 flex items-center justify-between shadow-sm z-20">
+        <div className="flex items-center gap-3">
+          <div className="p-2 bg-indigo-600 rounded-lg text-white shadow-indigo-200 shadow-lg">
+            <Calendar size={20} />
+          </div>
+          <h1 className="text-xl font-bold text-slate-800">GanttMaster <span className="font-normal text-slate-400 text-sm ml-2">| Planificador Inteligente</span></h1>
+        </div>
+
+        <div className="flex items-center gap-4 bg-slate-50 p-1.5 rounded-lg border border-slate-200">
+            <button 
+              onClick={() => setColumnWidth(prev => Math.max(20, prev - 10))}
+              className="p-2 hover:bg-white hover:shadow-sm rounded-md transition-all text-slate-600"
+              title="Alejar"
+            >
+              <ZoomOut size={18} />
+            </button>
+            <div className="w-24 px-2">
+              <input 
+                type="range" 
+                min="20" 
+                max="100" 
+                value={columnWidth} 
+                onChange={(e) => setColumnWidth(Number(e.target.value))}
+                className="w-full h-1.5 bg-slate-300 rounded-lg appearance-none cursor-pointer accent-indigo-600"
+              />
+            </div>
+            <button 
+              onClick={() => setColumnWidth(prev => Math.min(150, prev + 10))}
+              className="p-2 hover:bg-white hover:shadow-sm rounded-md transition-all text-slate-600"
+              title="Acercar"
+            >
+              <ZoomIn size={18} />
+            </button>
+        </div>
+
+        <button 
+          onClick={() => addTask()}
+          className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-lg shadow-md transition-all font-medium text-sm"
+        >
+          <Plus size={16} />
+          Proyecto Nuevo
+        </button>
+      </header>
+
+      {/* --- Área Principal --- */}
+      <div className="flex flex-1 overflow-hidden">
+        
+        {/* --- Panel Lateral (Lista de Tareas) --- */}
+        <div className="w-80 bg-white border-r border-slate-200 flex flex-col shadow-[4px_0_24px_rgba(0,0,0,0.02)] z-10">
+          <div className="h-10 border-b border-slate-200 bg-slate-50 flex items-center px-4 font-semibold text-xs text-slate-500 uppercase tracking-wider">
+            Tareas
+          </div>
+          <div className="flex-1 overflow-y-auto overflow-x-hidden custom-scrollbar">
+            {flattenTasks.map((task) => (
+              <div 
+                key={task.id} 
+                className="group flex items-center h-12 border-b border-slate-100 hover:bg-slate-50 transition-colors px-2"
+                style={{ paddingLeft: `${task.level * 20 + 8}px` }}
+              >
+                {/* Toggle Expand */}
+                <button 
+                  onClick={() => task.children && toggleExpand(task.id)}
+                  className={`p-1 rounded hover:bg-slate-200 text-slate-400 mr-1 ${!task.children || task.children.length === 0 ? 'invisible' : ''}`}
+                >
+                  {task.expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+                </button>
+
+                {/* Nombre Tarea */}
+                <input 
+                  type="text" 
+                  value={task.name}
+                  onChange={(e) => updateTask(task.id, { name: e.target.value })}
+                  className="flex-1 bg-transparent text-sm font-medium text-slate-700 focus:outline-none focus:text-indigo-600 truncate"
+                />
+
+                {/* Acciones */}
+                <div className="opacity-0 group-hover:opacity-100 flex items-center gap-1 transition-opacity">
+                  {task.type === 'task' && (
+                    <button 
+                      onClick={() => addTask(task.id)}
+                      className="p-1.5 text-emerald-600 hover:bg-emerald-50 rounded"
+                      title="Añadir Subtarea"
+                    >
+                      <Plus size={14} />
+                    </button>
+                  )}
+                  <button 
+                    onClick={() => deleteTask(task.id)}
+                    className="p-1.5 text-red-500 hover:bg-red-50 rounded"
+                    title="Eliminar"
+                  >
+                    <Trash2 size={14} />
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+          <div className="p-3 border-t border-slate-200 bg-slate-50 text-xs text-slate-500 text-center">
+            {flattenTasks.length} elementos totales
+          </div>
+        </div>
+
+        {/* --- Área del Gráfico (Gantt) --- */}
+        <div className="flex-1 flex flex-col overflow-hidden relative bg-white">
+          
+          {/* Cabecera de Fechas */}
+          <div 
+            ref={scrollContainerRef}
+            className="flex-1 overflow-auto custom-scrollbar relative"
+          >
+            <div className="sticky top-0 z-10 flex bg-white shadow-sm min-w-max border-b border-slate-200">
+              {calendarHeaders}
+            </div>
+
+            {/* Grid & Barras */}
+            <div className="relative min-w-max" style={{ width: totalDays * columnWidth }}>
+              
+              {/* Líneas de fondo del grid */}
+              <div className="absolute inset-0 flex pointer-events-none">
+                {Array.from({ length: totalDays }).map((_, i) => (
+                  <div 
+                    key={i} 
+                    className={`border-r border-slate-100 h-full ${i % 7 === 0 ? 'border-slate-200' : ''}`}
+                    style={{ width: columnWidth }}
+                  />
+                ))}
+              </div>
+
+              {/* Filas de tareas */}
+              <div className="pt-0">
+                {flattenTasks.map((task) => {
+                  const startOffset = getDiffDays(minDate, task.start) * columnWidth;
+                  const width = task.duration * columnWidth;
+                  
+                  return (
+                    <div 
+                      key={task.id} 
+                      className="h-12 relative flex items-center border-b border-slate-50 hover:bg-slate-50/50 transition-colors"
+                    >
+                      {/* Barra Gantt */}
+                      <div
+                        className={`absolute h-7 rounded-md shadow-sm group select-none flex items-center cursor-move ${task.color} ${dragging?.id === task.id ? 'opacity-80 ring-2 ring-indigo-300 ring-offset-1' : ''}`}
+                        style={{
+                          left: startOffset,
+                          width: width,
+                          minWidth: columnWidth // Mínimo 1 día
+                        }}
+                        onMouseDown={(e) => handleMouseDown(e, task, 'move')}
+                      >
+                        {/* Resize Handle Left */}
+                        <div 
+                          className="w-2 h-full absolute left-0 top-0 cursor-ew-resize opacity-0 group-hover:opacity-100 hover:bg-white/20 rounded-l-md transition-opacity"
+                          onMouseDown={(e) => handleMouseDown(e, task, 'resize-left')}
+                        />
+
+                        {/* Label dentro de la barra */}
+                        <span className="px-3 text-[11px] font-medium text-white truncate w-full pointer-events-none drop-shadow-md">
+                          {task.name}
+                        </span>
+
+                        {/* Porcentaje (visual) */}
+                        <div 
+                          className="absolute bottom-0 left-0 h-1 bg-black/20" 
+                          style={{ width: `${task.progress}%` }} 
+                        />
+
+                        {/* Resize Handle Right */}
+                        <div 
+                          className="w-2 h-full absolute right-0 top-0 cursor-ew-resize opacity-0 group-hover:opacity-100 hover:bg-white/20 rounded-r-md transition-opacity"
+                          onMouseDown={(e) => handleMouseDown(e, task, 'resize-right')}
+                        />
+                      </div>
+
+                      {/* Etiqueta flotante si es muy pequeña */}
+                      {width < 60 && (
+                         <div 
+                           className="absolute text-xs text-slate-400 ml-2 whitespace-nowrap pointer-events-none"
+                           style={{ left: startOffset + width }}
+                         >
+                           {task.duration}d
+                         </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+
+              {/* Indicador de "Hoy" */}
+              <div 
+                className="absolute top-0 bottom-0 w-px bg-red-500 z-0 pointer-events-none"
+                style={{ left: getDiffDays(minDate, new Date()) * columnWidth }}
+              >
+                <div className="bg-red-500 text-white text-[9px] font-bold px-1 py-0.5 rounded absolute -top-0 -translate-x-1/2">
+                  HOY
+                </div>
+              </div>
+
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <style>{`
+        .custom-scrollbar::-webkit-scrollbar {
+          width: 10px;
+          height: 10px;
+        }
+        .custom-scrollbar::-webkit-scrollbar-track {
+          background: #f1f5f9;
+        }
+        .custom-scrollbar::-webkit-scrollbar-thumb {
+          background: #cbd5e1;
+          border-radius: 5px;
+          border: 2px solid #f1f5f9;
+        }
+        .custom-scrollbar::-webkit-scrollbar-thumb:hover {
+          background: #94a3b8;
+        }
+      `}</style>
+    </div>
+  );
+}
