@@ -3,301 +3,207 @@ from tinydb import TinyDB, Query
 from datetime import datetime, timedelta
 import pandas as pd
 import tempfile
-import os
 
-# --- 1. CONFIGURATION & STATE ---
+# --- 1. SETUP ---
 db = TinyDB('db.json')
 
-class AppState:
-    def __init__(self):
-        self.selected_id = None
-
-state = AppState()
+# We use a simple dictionary to hold UI state allows for easier updates
+app_state = {
+    'selected_id': None,
+    'selected_title': ''
+}
 
 # --- 2. EXPORT FUNCTIONS ---
-
 def export_to_excel():
-    """Exports current tasks to an Excel file"""
     if not db.all():
         ui.notify('No tasks to export', type='warning')
         return
-        
-    # Create DataFrame
+    
     tasks = db.all()
-    # Add ID column for clarity
-    for t in tasks:
-        t['db_id'] = t.doc_id
+    # Add ID for clarity
+    for t in tasks: t['db_id'] = t.doc_id
         
     df = pd.DataFrame(tasks)
-    
-    # Save to temp file
     temp_file = tempfile.NamedTemporaryFile(suffix='.xlsx', delete=False)
     df.to_excel(temp_file.name, index=False)
     temp_file.close()
-    
     ui.download(temp_file.name, 'project_tasks.xlsx')
-    ui.notify('Excel exported successfully')
 
 def export_to_outlook():
-    """Generates an .ics file for Outlook/Calendar integration"""
     if not db.all():
         ui.notify('No tasks to export', type='warning')
         return
         
     ics_content = [
-        "BEGIN:VCALENDAR",
-        "VERSION:2.0",
-        "PRODID:-//VanBuilder//V1.3//EN",
-        "CALSCALE:GREGORIAN"
+        "BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//VanBuilder//V1.4//EN", "CALSCALE:GREGORIAN"
     ]
-    
     for item in db.all():
-        # Clean dates (remove hyphens for ICS format YYYYMMDD)
-        start_str = item['start'].replace('-', '')
-        end_str = item['end'].replace('-', '') if item['end'] else start_str
-        
-        ics_content.extend([
-            "BEGIN:VEVENT",
-            f"UID:task-{item.doc_id}",
-            f"DTSTART;VALUE=DATE:{start_str}",
-            f"DTEND;VALUE=DATE:{end_str}",
-            f"SUMMARY:{item['title']}",
-            "END:VEVENT"
-        ])
-        
+        start = item['start'].replace('-', '')
+        end = item['end'].replace('-', '') if item['end'] else start
+        ics_content.append(f"BEGIN:VEVENT\nUID:task-{item.doc_id}\nDTSTART;VALUE=DATE:{start}\nDTEND;VALUE=DATE:{end}\nSUMMARY:{item['title']}\nEND:VEVENT")
     ics_content.append("END:VCALENDAR")
     
     temp_file = tempfile.NamedTemporaryFile(mode='w+', suffix='.ics', delete=False, encoding='utf-8')
     temp_file.write('\n'.join(ics_content))
     temp_file.close()
-    
     ui.download(temp_file.name, 'project_calendar.ics')
-    ui.notify('ICS file downloaded')
 
-# --- 3. DATA HANDLERS ---
-
+# --- 3. DATA & UI UPDATES ---
 def get_events():
-    """Fetches data from TinyDB and formats it for FullCalendar"""
-    events = []
-    for item in db.all():
-        events.append({
-            'id': str(item.doc_id), # ID must be string for JS
-            'title': item['title'],
-            'start': item['start'],
-            'end': item['end'],
-            'color': item.get('color', '#3788d8'),
-            'allDay': True
-        })
-    return events
+    return [{
+        'id': str(item.doc_id),
+        'title': item['title'],
+        'start': item['start'],
+        'end': item['end'],
+        'color': item.get('color', '#3788d8'),
+        'allDay': True
+    } for item in db.all()]
 
-def refresh_calendar_ui():
-    """Forces the browser to reload events from the database"""
+def refresh_calendar_js():
+    # Refresh events in frontend without reloading page
     ui.run_javascript(f'window.projectCalendar.removeAllEvents(); window.projectCalendar.addEventSource({str(get_events())});')
 
-# --- 4. UI CONSTRUCTION ---
+# --- 4. MAIN UI ---
 
-# Inject Custom CSS for styling the Calendar
+# CSS Fixes for Centering and Weekends
 ui.add_head_html('''
 <style>
-    /* 1. Center the Day Numbers */
-    .fc-daygrid-day-top {
-        justify-content: center !important;
-        flex-direction: row !important;
-        padding-top: 4px;
-    }
-    .fc-daygrid-day-number {
-        font-weight: 600;
-        font-size: 1.1em;
-        text-decoration: none !important; 
-        color: #475569;
-    }
+    /* Center Day Numbers */
+    .fc-daygrid-day-top { flex-direction: row; justify-content: center; }
+    .fc-daygrid-day-number { font-size: 1.1em; font-weight: 600; color: #555; text-decoration: none !important; }
     
-    /* 2. Gray Background for Weekends (Sat/Sun) */
+    /* Weekend Background Color - Forced */
     .fc-day-sat, .fc-day-sun {
-        background-color: #f8fafc !important;
+        background-color: #f1f5f9 !important; /* Slate-100 */
     }
     
-    /* 3. General Polish */
-    .fc-event {
-        cursor: pointer;
-        border-radius: 4px;
-        box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-    }
-    .fc-col-header-cell-cushion {
-        text-transform: uppercase;
-        font-size: 0.85em;
-        font-weight: 700;
-        padding: 8px 0;
-    }
+    /* Fix for mouse cursor on events */
+    .fc-event { cursor: pointer; border: none; }
+    
+    /* Selection highlight style */
+    .selected-event { border: 2px solid black !important; opacity: 0.8; }
 </style>
 ''')
-
 ui.add_head_html('<script src="https://cdn.jsdelivr.net/npm/fullcalendar@6.1.10/index.global.min.js"></script>')
 
-# Main Container (Centered content)
 with ui.column().classes('w-full min-h-screen bg-white items-center p-8'):
-    
-    # --- HEADER SECTION ---
+
+    # -- HEADER --
     with ui.card().classes('w-full max-w-7xl mb-6 p-4 bg-white border border-gray-200 shadow-sm'):
         with ui.row().classes('w-full items-center justify-between'):
-            
-            # Title
             with ui.row().classes('items-center gap-2'):
                 ui.icon('assignment', size='md').classes('text-slate-800')
-                ui.label('Project Timeline').classes('text-xl font-bold text-slate-800')
-
-            # Export Buttons
+                ui.label('Project Timeline V1.4').classes('text-xl font-bold text-slate-800')
             with ui.row().classes('gap-2'):
                 ui.button('Excel', on_click=export_to_excel, icon='table_view').props('outline dense')
                 ui.button('Outlook (.ics)', on_click=export_to_outlook, icon='calendar_today').props('outline dense')
 
         ui.separator().classes('my-4')
-        
-        # --- INPUT CONTROLS ---
-        with ui.row().classes('w-full items-center gap-4 wrap'):
-            
-            # Task Name Input
-            task_input = ui.input(placeholder='New Task (e.g. Install insulation)').classes('flex-grow min-w-[200px]')
-            
-            # Color Selector
+
+        # -- CONTROLS --
+        with ui.row().classes('w-full items-center gap-4'):
+            task_input = ui.input(placeholder='New Task Name').classes('flex-grow min-w-[200px]')
             color_selector = ui.select({
-                '#3b82f6': 'Blue (Core)', 
-                '#10b981': 'Green (Done)', 
-                '#ef4444': 'Red (Urgent)',
-                '#f59e0b': 'Orange (WIP)'
+                '#3b82f6': 'Blue (Core)', '#10b981': 'Green (Done)', 
+                '#ef4444': 'Red (Urgent)', '#f59e0b': 'Orange (WIP)'
             }, value='#3b82f6').classes('w-40')
-            
-            # Add Function
-            def add_task_action():
-                if not task_input.value:
-                    ui.notify('Please enter a task name', type='warning')
-                    return
-                
+
+            def add_task():
+                if not task_input.value: return
                 today = datetime.now().strftime('%Y-%m-%d')
                 tomorrow = (datetime.now() + timedelta(days=1)).strftime('%Y-%m-%d')
-                
-                db.insert({
-                    'title': task_input.value,
-                    'start': today, 'end': tomorrow,
-                    'color': color_selector.value
-                })
+                db.insert({'title': task_input.value, 'start': today, 'end': tomorrow, 'color': color_selector.value})
                 task_input.value = ''
-                refresh_calendar_ui()
+                refresh_calendar_js()
                 ui.notify('Task added')
 
-            ui.button('Add', on_click=add_task_action, icon='add').classes('bg-slate-800 text-white')
+            ui.button('Add', on_click=add_task, icon='add').classes('bg-slate-800 text-white')
             
             ui.space()
-            
-            # --- DELETE BUTTON LOGIC ---
-            def delete_task_action():
-                if state.selected_id:
-                    db.remove(doc_ids=[state.selected_id])
+
+            # -- FIXED DELETE BUTTON LOGIC --
+            def delete_task():
+                if app_state['selected_id']:
+                    db.remove(doc_ids=[app_state['selected_id']])
                     # Reset state
-                    state.selected_id = None
-                    delete_btn.text = 'Delete Selected'
+                    app_state['selected_id'] = None
+                    app_state['selected_title'] = ''
                     delete_btn.disable()
-                    delete_btn.update() # Force UI refresh
-                    
-                    refresh_calendar_ui()
-                    ui.notify('Task deleted successfully')
+                    delete_btn.text = 'Delete Selected'
+                    refresh_calendar_js()
+                    ui.notify('Task deleted')
 
-            # Button is created here, initially disabled
-            delete_btn = ui.button('Delete Selected', on_click=delete_task_action, icon='delete') \
+            # Initialize as disabled using the method, NOT the prop string
+            delete_btn = ui.button('Delete Selected', on_click=delete_task, icon='delete') \
                 .classes('text-red-600 border-red-200') \
-                .props('outline disabled')
+                .props('outline')
+            delete_btn.disable() # Explicitly disable in Python
 
-    # --- CALENDAR COMPONENT ---
+    # -- CALENDAR --
     with ui.card().classes('w-full max-w-7xl h-[650px] shadow-lg rounded-xl overflow-hidden border border-gray-100'):
         ui.element('div').props('id=calendar').classes('w-full h-full font-sans')
 
-    # --- JAVASCRIPT BRIDGE ---
-    
-    # 1. Python handler for Drag & Drop / Resize
-    def on_date_update(e):
-        try:
-            event_id = int(e.args['id']) # Convert JS string ID to Python Int
-            new_start = e.args['start'].split('T')[0]
-            # If end is null (single day drop), use None or calculate based on logic. 
-            # TinyDB stores what we give it.
-            new_end = e.args['end'].split('T')[0] if e.args['end'] else None
-            
-            db.update({'start': new_start, 'end': new_end}, doc_ids=[event_id])
-            ui.notify('Timeline updated')
-        except Exception as err:
-            print(f"Error updating: {err}")
-
-    # 2. Python handler for Clicks
-    def on_event_click(e):
+    # -- PYTHON EVENT HANDLERS --
+    def handle_date_update(e):
         try:
             event_id = int(e.args['id'])
-            state.selected_id = event_id
+            db.update({
+                'start': e.args['start'].split('T')[0],
+                'end': e.args['end'].split('T')[0] if e.args['end'] else None
+            }, doc_ids=[event_id])
+            ui.notify('Timeline updated')
+        except: pass
+
+    def handle_event_click(e):
+        try:
+            event_id = int(e.args['id'])
+            app_state['selected_id'] = event_id
             
-            # Get task details to show in button
+            # Update Button UI
             task = db.get(doc_id=event_id)
             if task:
+                app_state['selected_title'] = task['title']
                 delete_btn.text = f"Delete '{task['title']}'"
-                delete_btn.enable() # Enable the button
-                delete_btn.update() # CRITICAL: Update the UI element
+                delete_btn.enable() # This enables the button
                 ui.notify(f"Selected: {task['title']}")
-        except Exception as err:
-            print(f"Error clicking: {err}")
+        except: pass
 
-    # 3. Initialize FullCalendar
-    def init_calendar_js():
-        events_data = get_events()
+    # -- JS INITIALIZATION --
+    def init_js():
         ui.run_javascript(f'''
             var calendarEl = document.getElementById('calendar');
             var calendar = new FullCalendar.Calendar(calendarEl, {{
                 initialView: 'dayGridMonth',
-                firstDay: 1, // Monday start
+                firstDay: 1,
                 locale: 'en',
                 height: '100%',
-                headerToolbar: {{ 
-                    left: 'prev,next today', 
-                    center: 'title', 
-                    right: 'dayGridMonth,listMonth' 
-                }},
+                headerToolbar: {{ left: 'prev,next today', center: 'title', right: 'dayGridMonth,listMonth' }},
                 editable: true,
                 selectable: true,
-                dayMaxEvents: true, // Allow "more" link
-                events: {str(events_data)},
+                events: {str(get_events())},
                 
-                // --- Event Handlers ---
-                
-                eventDrop: function(info) {{
-                    emitEvent('update_event', {{
-                        id: info.event.id, 
-                        start: info.event.start.toISOString(), 
-                        end: info.event.end ? info.event.end.toISOString() : null
-                    }});
-                }},
-                
-                eventResize: function(info) {{
-                    emitEvent('update_event', {{
-                        id: info.event.id, 
-                        start: info.event.start.toISOString(), 
-                        end: info.event.end ? info.event.end.toISOString() : null
-                    }});
-                }},
+                eventDrop: info => emitEvent('update_event', {{id: info.event.id, start: info.event.start.toISOString(), end: info.event.end ? info.event.end.toISOString() : null}}),
+                eventResize: info => emitEvent('update_event', {{id: info.event.id, start: info.event.start.toISOString(), end: info.event.end ? info.event.end.toISOString() : null}}),
                 
                 eventClick: function(info) {{
-                    // Highlight the element visually (optional JS touch)
-                    document.querySelectorAll('.fc-event').forEach(el => el.style.border = 'none');
-                    info.el.style.border = '2px solid #000';
-                    
+                    // Remove border from all others
+                    document.querySelectorAll('.fc-event').forEach(el => el.classList.remove('selected-event'));
+                    // Add border to clicked one
+                    info.el.classList.add('selected-event');
                     emitEvent('click_event', {{id: info.event.id}});
+                }},
+                
+                // Clear selection when clicking on background
+                dateClick: function() {{
+                     document.querySelectorAll('.fc-event').forEach(el => el.classList.remove('selected-event'));
                 }}
             }});
             calendar.render();
             window.projectCalendar = calendar;
         ''')
 
-    # Bind the custom events
-    ui.on('update_event', on_date_update)
-    ui.on('click_event', on_event_click)
-    
-    # Launch startup script
-    ui.timer(0.1, init_calendar_js, once=True)
+    ui.on('update_event', handle_date_update)
+    ui.on('click_event', handle_event_click)
+    ui.timer(0.1, init_js, once=True)
 
-ui.run(title='Project V1.3', reload=False)
+ui.run(title='Van V1.4', reload=False)
