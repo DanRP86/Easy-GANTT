@@ -17,7 +17,7 @@ def export_excel():
 
 def export_outlook():
     if not db.all(): return ui.notify('No data', type='warning')
-    ics = ["BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//Van//V1.7", "CALSCALE:GREGORIAN"]
+    ics = ["BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//Van//V1.8", "CALSCALE:GREGORIAN"]
     for t in db.all():
         s = t['start'].replace('-', '')
         e = t['end'].replace('-', '') if t['end'] else s
@@ -40,21 +40,22 @@ def refresh_ui():
 
 # --- 4. UI ---
 
-# CSS Fixes: Using "Non-Business" styling for robust weekend coloring
 ui.add_head_html('''
 <style>
-    /* 1. Target the Non-Business styling (Weekends) */
+    /* WEEKEND COLOR FIX - PURE GREY */
     .fc-non-business {
-        background-color: #e2e8f0 !important; /* Clearly darker grey */
-        opacity: 1 !important; /* Ensure it's not transparent */
+        background-color: #d1d5db !important; /* Grey-300 (Neutral) */
+        opacity: 1 !important;
+    }
+    /* Ensure no blue tint from overlay layers */
+    .fc-daygrid-day-frame, .fc-bg-event {
+        background: transparent !important;
     }
 
-    /* 2. Visual Polish */
-    .fc-daygrid-day-number { color: #444; font-weight: 600; text-decoration: none !important; }
+    /* GENERAL STYLES */
+    .fc-daygrid-day-number { color: #333; font-weight: 700; text-decoration: none !important; }
     .fc-daygrid-day-top { justify-content: center; }
-    .fc-event { cursor: pointer; border: none; box-shadow: 0 2px 3px rgba(0,0,0,0.1); }
-    
-    /* 3. Today Highlight (Orange accent) */
+    .fc-event { cursor: pointer; border: none; box-shadow: 0 2px 3px rgba(0,0,0,0.2); }
     .fc-day-today { background-color: #fff7ed !important; } 
 </style>
 <script src="https://cdn.jsdelivr.net/npm/fullcalendar@6.1.10/index.global.min.js"></script>
@@ -65,8 +66,8 @@ with ui.column().classes('w-full min-h-screen bg-white p-8 items-center'):
     # -- HEADER --
     with ui.card().classes('w-full max-w-6xl mb-4 p-4 flex-row justify-between items-center shadow-sm border'):
         with ui.row().classes('items-center gap-2'):
-            ui.icon('construction', size='md').classes('text-slate-700')
-            ui.label('Van Project V1.7').classes('text-xl font-bold text-slate-700')
+            ui.icon('directions_car', size='md').classes('text-slate-700')
+            ui.label('Van Project V1.8').classes('text-xl font-bold text-slate-700')
         
         with ui.row().classes('gap-2'):
             ui.button('Excel', on_click=export_excel, icon='download').props('outline dense')
@@ -88,11 +89,11 @@ with ui.column().classes('w-full min-h-screen bg-white p-8 items-center'):
             
         ui.button('Add', on_click=add_task).classes('bg-slate-800 text-white')
 
-    # -- CALENDAR CONTAINER --
+    # -- CALENDAR --
     with ui.card().classes('w-full max-w-6xl h-[600px] shadow-lg border rounded-xl overflow-hidden'):
         ui.element('div').props('id=calendar').classes('w-full h-full')
 
-    # --- EDIT MODAL (Double Click) ---
+    # --- EDIT MODAL ---
     with ui.dialog() as edit_dialog, ui.card().classes('w-96'):
         ui.label('Edit Task').classes('text-lg font-bold mb-4 text-slate-800')
         
@@ -111,20 +112,33 @@ with ui.column().classes('w-full min-h-screen bg-white p-8 items-center'):
             }, doc_ids=[eid])
             edit_dialog.close()
             refresh_ui()
-            ui.notify('Changes saved')
+            ui.notify('Saved')
 
-        def delete_current():
+        # --- DELETE CONFIRMATION LOGIC ---
+        def delete_request():
+            # Open a second, smaller dialog for confirmation
+            confirm_dialog.open()
+
+        def confirm_delete():
             eid = int(edit_id.text)
             db.remove(doc_ids=[eid])
-            edit_dialog.close()
+            confirm_dialog.close() # Close confirmation
+            edit_dialog.close()    # Close editor
             refresh_ui()
             ui.notify('Task deleted', type='negative')
 
         with ui.row().classes('w-full justify-end mt-4 gap-2'):
-            ui.button('Delete', on_click=delete_current, color='red').props('flat')
+            ui.button('Delete', on_click=delete_request, color='red').props('flat')
             ui.button('Save', on_click=save_changes).classes('bg-slate-800 text-white')
 
-    # -- HANDLERS --
+    # --- CONFIRMATION DIALOG ---
+    with ui.dialog() as confirm_dialog, ui.card():
+        ui.label('Are you sure you want to delete this task?')
+        with ui.row().classes('w-full justify-end mt-4'):
+            ui.button('Cancel', on_click=confirm_dialog.close).props('flat')
+            ui.button('Yes, Delete', on_click=confirm_delete, color='red')
+
+    # -- HANDLERS & INIT --
     def handle_double_click(e):
         eid = int(e.args['id'])
         item = db.get(doc_id=eid)
@@ -142,41 +156,29 @@ with ui.column().classes('w-full min-h-screen bg-white p-8 items-center'):
         }, doc_ids=[int(e.args['id'])])
         ui.notify('Moved')
 
-    # -- JS INIT --
     def init():
         ui.run_javascript(f'''
             var el = document.getElementById('calendar');
             var lastClickTime = 0;
-
             window.cal = new FullCalendar.Calendar(el, {{
                 initialView: 'dayGridMonth',
                 firstDay: 1, locale: 'en', height: '100%',
                 headerToolbar: {{ left: 'prev,next', center: 'title', right: 'dayGridMonth,listMonth' }},
-                
-                // --- CRITICAL: NATIVE WEEKEND HANDLING ---
-                businessHours: {{
-                    daysOfWeek: [ 1, 2, 3, 4, 5 ], // Monday - Friday
-                }},
-                // -----------------------------------------
-
-                editable: true, 
-                events: {str(get_events())},
-                
+                businessHours: {{ daysOfWeek: [ 1, 2, 3, 4, 5 ] }},
+                editable: true, events: {str(get_events())},
                 eventClick: function(info) {{
-                    var currentTime = new Date().getTime();
-                    var isDoubleClick = (currentTime - lastClickTime) < 500; 
-                    lastClickTime = currentTime;
-                    if (isDoubleClick) emitEvent('dbl_click_event', {{id: info.event.id}});
+                    var curr = new Date().getTime();
+                    if ((curr - lastClickTime) < 500) emitEvent('dbl_click_event', {{id: info.event.id}});
+                    lastClickTime = curr;
                 }},
-                
                 eventDrop: info => emitEvent('drop_event', {{id: info.event.id, start: info.event.start.toISOString(), end: info.event.end ? info.event.end.toISOString() : null}}),
                 eventResize: info => emitEvent('drop_event', {{id: info.event.id, start: info.event.start.toISOString(), end: info.event.end ? info.event.end.toISOString() : null}})
             }});
             window.cal.render();
         ''')
-
+    
     ui.on('dbl_click_event', handle_double_click)
     ui.on('drop_event', handle_drop)
     ui.timer(0.1, init, once=True)
 
-ui.run(title='Van V1.7', reload=False)
+ui.run(title='Van V1.8', reload=False)
