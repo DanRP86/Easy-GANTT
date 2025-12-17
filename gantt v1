@@ -1,12 +1,83 @@
 from nicegui import ui, app
 from tinydb import TinyDB, Query
 from datetime import datetime, timedelta
+import pandas as pd
+import tempfile
+import os
 
-# --- 1. CONFIGURATION & DATABASE ---
+# --- 1. CONFIGURACIÓN Y ESTADO ---
 db = TinyDB('db.json')
 
-# Convert TinyDB data to FullCalendar format
+# Estado global simple para manejar la selección
+class State:
+    def __init__(self):
+        self.selected_id = None
+
+state = State()
+
+# --- 2. FUNCIONES DE EXPORTACIÓN ---
+
+def export_to_excel():
+    if not db.all():
+        ui.notify('No tasks to export', type='warning')
+        return
+        
+    # Crear DataFrame
+    df = pd.DataFrame(db.all())
+    # Limpiar columnas (TinyDB usa doc_id interno, lo añadimos si queremos)
+    df['id'] = [item.doc_id for item in db.all()]
+    
+    # Guardar en temporal
+    temp_file = tempfile.NamedTemporaryFile(suffix='.xlsx', delete=False)
+    df.to_excel(temp_file.name, index=False)
+    temp_file.close()
+    
+    ui.download(temp_file.name, 'van_project_tasks.xlsx')
+    ui.notify('Excel downloaded!')
+
+def export_to_outlook():
+    """Genera un archivo .ics manual para importar en Outlook/Gmail/Apple"""
+    if not db.all():
+        ui.notify('No tasks to export', type='warning')
+        return
+        
+    ics_content = [
+        "BEGIN:VCALENDAR",
+        "VERSION:2.0",
+        "PRODID:-//VanBuilder//V1.2//EN",
+        "CALSCALE:GREGORIAN"
+    ]
+    
+    for item in db.all():
+        # Formato fecha ICS: YYYYMMDD
+        start_str = item['start'].replace('-', '')
+        # End date en ICS es exclusivo, y FullCalendar/TinyDB guardan inclusivo o exclusivo dependiendo.
+        # Asumimos que el string viene YYYY-MM-DD.
+        end_str = item['end'].replace('-', '') if item['end'] else start_str
+        
+        ics_content.extend([
+            "BEGIN:VEVENT",
+            f"UID:van-task-{item.doc_id}",
+            f"DTSTART;VALUE=DATE:{start_str}",
+            f"DTEND;VALUE=DATE:{end_str}",
+            f"SUMMARY:{item['title']}",
+            "END:VEVENT"
+        ])
+        
+    ics_content.append("END:VCALENDAR")
+    
+    # Guardar archivo de texto
+    temp_file = tempfile.NamedTemporaryFile(mode='w+', suffix='.ics', delete=False, encoding='utf-8')
+    temp_file.write('\n'.join(ics_content))
+    temp_file.close()
+    
+    ui.download(temp_file.name, 'van_project_calendar.ics')
+    ui.notify('ICS file downloaded. Open it to add to Outlook!')
+
+# --- 3. LÓGICA DE NEGOCIO ---
+
 def get_events():
+    """Convierte datos de TinyDB a formato FullCalendar"""
     events = []
     for item in db.all():
         events.append({
@@ -19,153 +90,135 @@ def get_events():
         })
     return events
 
-# --- 2. BACKEND LOGIC ---
-
-# Global variable to store the currently selected task ID
-selected_task_id = None
-
-def handle_add_task():
-    if not new_task_input.value:
-        ui.notify('Please enter a task name', type='warning')
-        return
-
-    today = datetime.now().strftime('%Y-%m-%d')
-    # Default duration: 1 day
-    tomorrow = (datetime.now() + timedelta(days=1)).strftime('%Y-%m-%d')
-    
-    db.insert({
-        'title': new_task_input.value,
-        'start': today, 
-        'end': tomorrow,
-        'color': color_picker.value
-    })
-    
-    new_task_input.value = '' 
-    refresh_calendar()
-    ui.notify('Task added successfully')
-
-def handle_update_drop_resize(e):
-    """Updates dates when user drags or resizes a bar"""
-    event_id = int(e.args['id'])
-    
-    db.update({
-        'start': e.args['start'].split('T')[0],
-        'end': e.args['end'].split('T')[0] if e.args['end'] else None
-    }, doc_ids=[event_id])
-    
-    ui.notify('Dates updated')
-
-def handle_event_click(e):
-    """Selects the task but DOES NOT delete it yet"""
-    global selected_task_id
-    selected_task_id = int(e.args['id'])
-    
-    task = db.get(doc_id=selected_task_id)
-    
-    # Update UI to show selection
-    delete_button.enable()
-    delete_button.text = f'Delete "{task["title"]}"'
-    ui.notify(f'Selected: {task["title"]}')
-
-def delete_selected_task():
-    """Actually deletes the task when the button is pressed"""
-    global selected_task_id
-    if selected_task_id:
-        db.remove(doc_ids=[selected_task_id])
-        selected_task_id = None
-        
-        # Reset button
-        delete_button.disable()
-        delete_button.text = 'Delete Selected'
-        
-        refresh_calendar()
-        ui.notify('Task deleted')
-
 def refresh_calendar():
-    # Reloads events in the frontend
     ui.run_javascript(f'window.vanCalendar.removeAllEvents(); window.vanCalendar.addEventSource({str(get_events())});')
 
-# --- 3. UI / FRONTEND ---
+# --- 4. INTERFAZ DE USUARIO (UI) ---
 
 ui.add_head_html('<script src="https://cdn.jsdelivr.net/npm/fullcalendar@6.1.10/index.global.min.js"></script>')
 
-# Main Container
-with ui.column().classes('w-full h-screen p-6 bg-slate-50'):
+# Contenedor Principal (Centrado)
+with ui.column().classes('w-full min-h-screen bg-slate-50 items-center p-8'):
     
-    # --- Header & Controls ---
-    with ui.row().classes('w-full items-center gap-4 mb-2'):
-        ui.label('🚐 Cliff 600 Planner').classes('text-2xl font-bold text-slate-800 mr-4')
-        
-        # Input Controls
-        new_task_input = ui.input(placeholder='New Task Name').classes('w-64 bg-white rounded px-2 shadow-sm')
-        
-        color_picker = ui.select({
-            '#3788d8': 'Blue (Structure)', 
-            '#27ae60': 'Green (Finish)', 
-            '#e74c3c': 'Red (Critical)',
-            '#f39c12': 'Orange (Elec)'
-        }, value='#3788d8').classes('w-40')
-        
-        ui.button('Add Task', on_click=handle_add_task, icon='add').classes('bg-slate-700 text-white shadow-sm')
-        
-        # Spacer to push delete button to the right
-        ui.space()
-        
-        # SAFE DELETE BUTTON (Disabled by default)
-        delete_button = ui.button('Delete Selected', on_click=delete_selected_task, icon='delete') \
-            .classes('bg-red-100 text-red-600') \
-            .props('disabled')
+    # --- CABECERA Y HERRAMIENTAS ---
+    with ui.card().classes('w-full max-w-6xl mb-6 p-4'):
+        with ui.row().classes('w-full items-center justify-between'):
+            
+            # Título
+            with ui.row().classes('items-center gap-2'):
+                ui.icon('directions_car', size='md').classes('text-slate-700')
+                ui.label('Van Project Planner').classes('text-xl font-bold text-slate-700')
 
-    # --- Calendar Area ---
-    with ui.card().classes('w-full h-full shadow-lg no-shadow-border rounded-xl overflow-hidden'):
+            # Botones de Exportación
+            with ui.row().classes('gap-2'):
+                ui.button('Excel', on_click=export_to_excel, icon='table_view').props('flat dense')
+                ui.button('Outlook (.ics)', on_click=export_to_outlook, icon='calendar_month').props('flat dense')
+
+        ui.separator().classes('my-4')
+        
+        # Controles de Tarea (Input)
+        with ui.row().classes('w-full items-center gap-4 wrap'):
+            new_task_input = ui.input(placeholder='New Task (e.g. Insulation)').classes('flex-grow min-w-[200px]')
+            
+            color_picker = ui.select({
+                '#3788d8': 'Structure (Blue)', 
+                '#27ae60': 'Finish (Green)', 
+                '#e74c3c': 'Urgent (Red)',
+                '#f39c12': 'Electric (Orange)'
+            }, value='#3788d8').classes('w-40')
+            
+            def add_task():
+                if not new_task_input.value:
+                    ui.notify('Task name is empty', type='negative')
+                    return
+                
+                today = datetime.now().strftime('%Y-%m-%d')
+                tomorrow = (datetime.now() + timedelta(days=1)).strftime('%Y-%m-%d')
+                
+                db.insert({
+                    'title': new_task_input.value,
+                    'start': today, 'end': tomorrow,
+                    'color': color_picker.value
+                })
+                new_task_input.value = ''
+                refresh_calendar()
+                ui.notify('Task added')
+
+            ui.button('Add Task', on_click=add_task, icon='add').classes('bg-slate-700 text-white')
+            
+            ui.space()
+            
+            # --- BOTÓN DELETE (Definido aquí para tener acceso) ---
+            def delete_action():
+                if state.selected_id:
+                    db.remove(doc_ids=[state.selected_id])
+                    state.selected_id = None
+                    delete_btn.disable()
+                    delete_btn.text = 'Delete Selected'
+                    refresh_calendar()
+                    ui.notify('Task deleted', type='negative')
+
+            delete_btn = ui.button('Delete Selected', on_click=delete_action, icon='delete') \
+                .classes('bg-red-50 text-red-600 border border-red-200') \
+                .props('disabled outline')
+
+    # --- CALENDARIO ---
+    with ui.card().classes('w-full max-w-6xl h-[600px] shadow-xl no-shadow-border rounded-xl overflow-hidden'):
         ui.element('div').props('id=calendar').classes('w-full h-full font-sans')
 
-    # --- Javascript Initialization ---
+    # --- JAVASCRIPT & HANDLERS ---
+    
+    def on_update_dates(e):
+        """Callback cuando arrastras una tarea"""
+        event_id = int(e.args['id'])
+        db.update({
+            'start': e.args['start'].split('T')[0],
+            'end': e.args['end'].split('T')[0] if e.args['end'] else None
+        }, doc_ids=[event_id])
+        ui.notify('Dates updated')
+
+    def on_event_click(e):
+        """Callback cuando haces clic en una tarea"""
+        event_id = int(e.args['id'])
+        state.selected_id = event_id
+        
+        # Recuperar nombre de la tarea para mostrarlo en el botón
+        task = db.get(doc_id=event_id)
+        if task:
+            delete_btn.text = f'Delete "{task["title"]}"'
+            delete_btn.enable()
+            delete_btn.update() # Forzar actualización visual
+            ui.notify(f'Selected: {task["title"]}')
+
     def init_calendar():
         events_json = get_events()
         ui.run_javascript(f'''
             var calendarEl = document.getElementById('calendar');
             var calendar = new FullCalendar.Calendar(calendarEl, {{
-                // SETTINGS
                 initialView: 'dayGridMonth',
-                firstDay: 1,  // 1 = Monday
-                locale: 'en', // English
+                firstDay: 1, // Lunes
+                locale: 'en',
                 height: '100%',
-                
-                // HEADER & NAVIGATION
                 headerToolbar: {{ 
                     left: 'prev,next today', 
                     center: 'title', 
-                    right: 'dayGridMonth,listMonth' // Using listMonth to see more items
+                    right: 'dayGridMonth,listMonth' 
                 }},
-
-                // INTERACTION
                 editable: true,
                 selectable: true,
                 events: {str(events_json)},
                 
-                // EVENTS (Connecting JS to Python)
-                
-                // 1. Drag & Drop / Resize -> Updates Dates
                 eventDrop: info => emitEvent('update_event', {{id: info.event.id, start: info.event.start.toISOString(), end: info.event.end ? info.event.end.toISOString() : null}}),
                 eventResize: info => emitEvent('update_event', {{id: info.event.id, start: info.event.start.toISOString(), end: info.event.end.toISOString()}}),
-                
-                // 2. Click -> Selects for deletion
-                eventClick: function(info) {{
-                    // Visual feedback (change border color temporarily)
-                    info.el.style.borderColor = 'black';
-                    emitEvent('click_event', {{id: info.event.id}});
-                }}
+                eventClick: info => emitEvent('click_event', {{id: info.event.id}})
             }});
             calendar.render();
             window.vanCalendar = calendar;
         ''')
+
+    ui.on('update_event', on_update_dates)
+    ui.on('click_event', on_event_click)
     
-    # Event Listeners
-    ui.on('update_event', handle_update_drop_resize)
-    ui.on('click_event', handle_event_click)
-    
-    # Start
     ui.timer(0.1, init_calendar, once=True)
 
-ui.run(title='Van Project V1.1', reload=False)
+ui.run(title='Van Project V1.2', reload=False)
