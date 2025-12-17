@@ -17,7 +17,7 @@ def export_excel():
 
 def export_outlook():
     if not db.all(): return ui.notify('No data', type='warning')
-    ics = ["BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//Van//V1.6", "CALSCALE:GREGORIAN"]
+    ics = ["BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//Van//V1.7", "CALSCALE:GREGORIAN"]
     for t in db.all():
         s = t['start'].replace('-', '')
         e = t['end'].replace('-', '') if t['end'] else s
@@ -40,21 +40,22 @@ def refresh_ui():
 
 # --- 4. UI ---
 
-# CSS Fixes: Aggressive Weekend Coloring & Double Click Pointer
+# CSS Fixes: Using "Non-Business" styling for robust weekend coloring
 ui.add_head_html('''
 <style>
-    /* 1. Weekends: Force Grey and make inner containers transparent */
-    .fc-day-sat, .fc-day-sun {
-        background-color: #f1f5f9 !important;
-    }
-    .fc-daygrid-day-frame, .fc-daygrid-day-bg, .fc-daygrid-day-top {
-        background-color: transparent !important; /* Don't hide the grey */
+    /* 1. Target the Non-Business styling (Weekends) */
+    .fc-non-business {
+        background-color: #e2e8f0 !important; /* Clearly darker grey */
+        opacity: 1 !important; /* Ensure it's not transparent */
     }
 
-    /* 2. Visuals */
+    /* 2. Visual Polish */
     .fc-daygrid-day-number { color: #444; font-weight: 600; text-decoration: none !important; }
     .fc-daygrid-day-top { justify-content: center; }
     .fc-event { cursor: pointer; border: none; box-shadow: 0 2px 3px rgba(0,0,0,0.1); }
+    
+    /* 3. Today Highlight (Orange accent) */
+    .fc-day-today { background-color: #fff7ed !important; } 
 </style>
 <script src="https://cdn.jsdelivr.net/npm/fullcalendar@6.1.10/index.global.min.js"></script>
 ''')
@@ -65,7 +66,7 @@ with ui.column().classes('w-full min-h-screen bg-white p-8 items-center'):
     with ui.card().classes('w-full max-w-6xl mb-4 p-4 flex-row justify-between items-center shadow-sm border'):
         with ui.row().classes('items-center gap-2'):
             ui.icon('construction', size='md').classes('text-slate-700')
-            ui.label('Van Project V1.6').classes('text-xl font-bold text-slate-700')
+            ui.label('Van Project V1.7').classes('text-xl font-bold text-slate-700')
         
         with ui.row().classes('gap-2'):
             ui.button('Excel', on_click=export_excel, icon='download').props('outline dense')
@@ -91,11 +92,11 @@ with ui.column().classes('w-full min-h-screen bg-white p-8 items-center'):
     with ui.card().classes('w-full max-w-6xl h-[600px] shadow-lg border rounded-xl overflow-hidden'):
         ui.element('div').props('id=calendar').classes('w-full h-full')
 
-    # --- EDIT MODAL (Opens on Double Click) ---
+    # --- EDIT MODAL (Double Click) ---
     with ui.dialog() as edit_dialog, ui.card().classes('w-96'):
         ui.label('Edit Task').classes('text-lg font-bold mb-4 text-slate-800')
         
-        edit_id = ui.label().classes('hidden') # Stores ID
+        edit_id = ui.label().classes('hidden') 
         edit_title = ui.input('Task Name').classes('w-full mb-2')
         with ui.row().classes('w-full gap-2'):
             edit_start = ui.input('Start (YYYY-MM-DD)').classes('w-1/2')
@@ -125,7 +126,6 @@ with ui.column().classes('w-full min-h-screen bg-white p-8 items-center'):
 
     # -- HANDLERS --
     def handle_double_click(e):
-        # Open Modal
         eid = int(e.args['id'])
         item = db.get(doc_id=eid)
         if item:
@@ -136,7 +136,6 @@ with ui.column().classes('w-full min-h-screen bg-white p-8 items-center'):
             edit_dialog.open()
 
     def handle_drop(e):
-        # Drag & Drop Update
         db.update({
             'start': e.args['start'].split('T')[0],
             'end': e.args['end'].split('T')[0] if e.args['end'] else None
@@ -147,28 +146,27 @@ with ui.column().classes('w-full min-h-screen bg-white p-8 items-center'):
     def init():
         ui.run_javascript(f'''
             var el = document.getElementById('calendar');
-            // Variable to track click timing for Double Click simulation
             var lastClickTime = 0;
 
             window.cal = new FullCalendar.Calendar(el, {{
                 initialView: 'dayGridMonth',
                 firstDay: 1, locale: 'en', height: '100%',
                 headerToolbar: {{ left: 'prev,next', center: 'title', right: 'dayGridMonth,listMonth' }},
+                
+                // --- CRITICAL: NATIVE WEEKEND HANDLING ---
+                businessHours: {{
+                    daysOfWeek: [ 1, 2, 3, 4, 5 ], // Monday - Friday
+                }},
+                // -----------------------------------------
+
                 editable: true, 
                 events: {str(get_events())},
                 
-                // EVENT CLICK - Manual Double Click Logic
                 eventClick: function(info) {{
                     var currentTime = new Date().getTime();
-                    var isDoubleClick = (currentTime - lastClickTime) < 500; // 500ms threshold
+                    var isDoubleClick = (currentTime - lastClickTime) < 500; 
                     lastClickTime = currentTime;
-
-                    if (isDoubleClick) {{
-                        // Emit only on double click
-                        emitEvent('dbl_click_event', {{id: info.event.id}});
-                    }} else {{
-                        // Optional: Highlight on single click if desired
-                    }}
+                    if (isDoubleClick) emitEvent('dbl_click_event', {{id: info.event.id}});
                 }},
                 
                 eventDrop: info => emitEvent('drop_event', {{id: info.event.id, start: info.event.start.toISOString(), end: info.event.end ? info.event.end.toISOString() : null}}),
@@ -181,4 +179,4 @@ with ui.column().classes('w-full min-h-screen bg-white p-8 items-center'):
     ui.on('drop_event', handle_drop)
     ui.timer(0.1, init, once=True)
 
-ui.run(title='Van V1.6', reload=False)
+ui.run(title='Van V1.7', reload=False)
